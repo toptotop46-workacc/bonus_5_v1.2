@@ -42,12 +42,19 @@ def run_mint4season() -> None:
     mint4season_run()
 
 
+def run_metamap() -> None:
+    from modules.metamap import run as metamap_run
+
+    metamap_run()
+
+
 def build_modules() -> Dict[str, Module]:
     return {
         "1": Module(key="1", title="RedButton", run=run_redbutton),
         "2": Module(key="2", title="CashOrCrash", run=run_cashorcrash),
         "3": Module(key="3", title="Uniswap", run=run_uniswap),
         "4": Module(key="4", title="Mint Season 4", run=run_mint4season),
+        "5": Module(key="5", title="MetaMap NFT", run=run_metamap),
     }
 
 
@@ -85,6 +92,7 @@ def main() -> None:
         "cashorcrash": "2",
         "uniswap": "3",
         "mint4season": "4",
+        "metamap": "5",
     }
 
     if args.list:

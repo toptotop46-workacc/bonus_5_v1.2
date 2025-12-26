@@ -992,63 +992,222 @@ class CashOrCrash:
                                                     logger.info("Обнаружена кнопка 'Out of IP Games', завершаем работу")
                                                     return None  # Возвращаем None для случая "Out of IP Games"
                                                 
-                                                # Ищем и кликаем на кнопку "Play with IP"
-                                                play_with_ip_selector = 'button[data-slot="button"][aria-label="Play with IP"]'
-                                                play_with_ip_clicked = False
-                                                
+                                                # Проверяем наличие модального окна с ошибкой транзакции
+                                                # "Your start transaction is not being detected. Try again to start the game."
+                                                transaction_error_modal_handled = False
+                                                start_again_clicked_in_modal = False  # Флаг для отслеживания нажатия "START AGAIN" в модальном окне
+                                                game_already_active = False  # Инициализируем флаг активности игры
+                                                play_with_ip_clicked = False  # Инициализируем флаг нажатия "Play with IP"
                                                 try:
-                                                    logger.info("Ожидание кнопки 'Play with IP' на основной странице...")
-                                                    await page.wait_for_selector(play_with_ip_selector, timeout=30000)
-                                                    await page.click(play_with_ip_selector)
-                                                    logger.success("Кнопка 'Play with IP' нажата успешно")
-                                                    play_with_ip_clicked = True
-                                                    failed_attempts = 0  # Сбрасываем счетчик при успехе
+                                                    # Проверяем наличие текста об ошибке транзакции
+                                                    error_text_selectors = [
+                                                        'text=/Your start transaction is not being detected/i',
+                                                        'text=/Try again to start the game/i',
+                                                    ]
+                                                    
+                                                    for error_selector in error_text_selectors:
+                                                        try:
+                                                            error_element = page.locator(error_selector).first
+                                                            if await error_element.is_visible(timeout=2000):
+                                                                logger.info("Обнаружено модальное окно с ошибкой транзакции, обрабатываем...")
+                                                                
+                                                                # Ищем кнопку "START AGAIN" в модальном окне
+                                                                start_again_modal_selectors = [
+                                                                    'button[data-slot="button"][aria-label="Start again"]',
+                                                                    'button[data-slot="button"]:has-text("Start again")',
+                                                                    'button:has-text("Start again")',
+                                                                    'button:has-text("START AGAIN")',
+                                                                ]
+                                                                
+                                                                for selector in start_again_modal_selectors:
+                                                                    try:
+                                                                        start_again_button = page.locator(selector).first
+                                                                        if await start_again_button.is_visible(timeout=2000):
+                                                                            await start_again_button.click()
+                                                                            logger.success("Кнопка 'Start again' в модальном окне нажата успешно")
+                                                                            start_again_clicked_in_modal = True
+                                                                            transaction_error_modal_handled = True
+                                                                            await asyncio.sleep(2)  # Ждем закрытия модального окна
+                                                                            # После нажатия "START AGAIN" в модальном окне может открыться окно расширения для подписи
+                                                                            # Устанавливаем флаг, чтобы код знал, что нужно обработать подписание транзакции
+                                                                            # Но сначала нужно проверить, не находится ли игра уже в активном состоянии
+                                                                            # (после подписания транзакции может появиться кнопка "Start Game" или "Start again")
+                                                                            break
+                                                                    except Exception:
+                                                                        continue
+                                                                
+                                                                # Если не нашли "START AGAIN", пробуем закрыть через "CANCEL"
+                                                                if not start_again_clicked_in_modal:
+                                                                    cancel_selectors = [
+                                                                        'button[data-slot="button"][aria-label="Cancel"]',
+                                                                        'button[data-slot="button"]:has-text("Cancel")',
+                                                                        'button:has-text("Cancel")',
+                                                                        'button:has-text("CANCEL")',
+                                                                    ]
+                                                                    
+                                                                    for cancel_selector in cancel_selectors:
+                                                                        try:
+                                                                            cancel_button = page.locator(cancel_selector).first
+                                                                            if await cancel_button.is_visible(timeout=2000):
+                                                                                await cancel_button.click()
+                                                                                logger.info("Модальное окно закрыто через 'Cancel'")
+                                                                                transaction_error_modal_handled = True
+                                                                                await asyncio.sleep(1)
+                                                                                break
+                                                                        except Exception:
+                                                                            continue
+                                                                
+                                                                break
+                                                        except Exception:
+                                                            continue
                                                 except Exception as e:
-                                                    # Пробуем альтернативные селекторы
-                                                    logger.debug(f"Не удалось найти кнопку по селектору {play_with_ip_selector}, пробуем альтернативные: {e}")
+                                                    logger.debug(f"Ошибка при проверке модального окна с ошибкой транзакции: {e}")
+                                                
+                                                # Если мы нажали "START AGAIN" в модальном окне, нужно обработать подписание транзакции
+                                                if start_again_clicked_in_modal:
+                                                    logger.info("Обработка подписания транзакции после нажатия 'Start again' в модальном окне...")
+                                                    # Ждём появления нового окна расширения для подписи транзакции
+                                                    transaction_sign_page = None
+                                                    
+                                                    # Ждём появления новой страницы расширения (может открыться с задержкой)
+                                                    for attempt in range(15):  # Пробуем до 15 раз с интервалом 0.5 сек
+                                                        for existing_page in context.pages:
+                                                            # Ищем страницу расширения, которая отличается от предыдущих
+                                                            if (existing_page.url.startswith(f"chrome-extension://{extension_id}/") 
+                                                                and existing_page != extension_page 
+                                                                and existing_page != sign_page):
+                                                                transaction_sign_page = existing_page
+                                                                break
+                                                        if transaction_sign_page:
+                                                            break
+                                                        await asyncio.sleep(0.5)
+                                                    
+                                                    if not transaction_sign_page:
+                                                        logger.warning("Новое окно расширения для транзакции не найдено, пробуем найти любую новую страницу расширения")
+                                                        # Пробуем найти любую новую страницу расширения
+                                                        for existing_page in context.pages:
+                                                            if (existing_page.url.startswith("chrome-extension://") 
+                                                                and existing_page != extension_page 
+                                                                and existing_page != sign_page):
+                                                                transaction_sign_page = existing_page
+                                                                break
+                                                    
+                                                    if transaction_sign_page:
+                                                        logger.info("Обработка окна подписи транзакции...")
+                                                        try:
+                                                            # Ожидаем кнопку "Sign"
+                                                            sign_button = transaction_sign_page.locator('button:has-text("Sign")').first
+                                                            await sign_button.wait_for(state="visible", timeout=10000)
+                                                            await sign_button.click()
+                                                            logger.success("Кнопка 'Sign' нажата успешно")
+                                                            
+                                                            # Ожидаем кнопку "Confirm"
+                                                            await asyncio.sleep(1)
+                                                            confirm_button = transaction_sign_page.locator('button:has-text("Confirm")').first
+                                                            await confirm_button.wait_for(state="visible", timeout=10000)
+                                                            await confirm_button.click()
+                                                            logger.success("Кнопка 'Confirm' нажата успешно")
+                                                            
+                                                            # Ждём закрытия окна расширения
+                                                            await asyncio.sleep(2)
+                                                            
+                                                            # Возвращаемся на основную страницу
+                                                            await page.bring_to_front()
+                                                            await asyncio.sleep(2)
+                                                            
+                                                            logger.info("Транзакция подписана после нажатия 'Start again' в модальном окне")
+                                                            # Устанавливаем флаги, чтобы пропустить поиск "Play with IP" и продолжить выполнение
+                                                            game_already_active = True
+                                                            play_with_ip_clicked = True
+                                                        except Exception as e:
+                                                            logger.warning(f"Ошибка при подписании транзакции после 'Start again' в модальном окне: {e}")
+                                                    else:
+                                                        logger.warning("Окно расширения для подписи транзакции не найдено после нажатия 'Start again' в модальном окне")
+                                                        # Даже если окно расширения не найдено, устанавливаем флаги, чтобы продолжить выполнение
+                                                        game_already_active = True
+                                                        play_with_ip_clicked = True
+                                                
+                                                # Проверяем, не находится ли игра уже в активном состоянии
+                                                # (если есть кнопка "START GAME" или "START AGAIN", значит игра уже активна)
+                                                # Но только если мы еще не установили эти флаги после обработки модального окна
+                                                if not game_already_active:
                                                     try:
-                                                        # Пробуем по data-slot и тексту
-                                                        text_selector = 'button[data-slot="button"]:has-text("Play with IP")'
-                                                        await page.wait_for_selector(text_selector, timeout=10000)
-                                                        await page.click(text_selector)
-                                                        logger.success("Кнопка 'Play with IP' нажата успешно (через альтернативный селектор)")
+                                                        start_game_check = page.locator('button[data-slot="button"][aria-label="Start Game"]').first
+                                                        if await start_game_check.is_visible(timeout=2000):
+                                                            logger.info("Игра уже в активном состоянии (найдена кнопка 'Start Game'), пропускаем 'Play with IP'")
+                                                            game_already_active = True
+                                                            play_with_ip_clicked = True  # Устанавливаем флаг, чтобы продолжить выполнение
+                                                    except Exception:
+                                                        try:
+                                                            start_again_check = page.locator('button[data-slot="button"][aria-label="Start again"]').first
+                                                            if await start_again_check.is_visible(timeout=2000):
+                                                                logger.info("Игра уже в активном состоянии (найдена кнопка 'Start again'), пропускаем 'Play with IP'")
+                                                                game_already_active = True
+                                                                play_with_ip_clicked = True  # Устанавливаем флаг, чтобы продолжить выполнение
+                                                        except Exception:
+                                                            pass
+                                                
+                                                # Ищем и кликаем на кнопку "Play with IP" только если игра не активна
+                                                if not game_already_active:
+                                                    play_with_ip_selector = 'button[data-slot="button"][aria-label="Play with IP"]'
+                                                    play_with_ip_clicked = False
+                                                    
+                                                    try:
+                                                        logger.info("Ожидание кнопки 'Play with IP' на основной странице...")
+                                                        await page.wait_for_selector(play_with_ip_selector, timeout=30000)
+                                                        await page.click(play_with_ip_selector)
+                                                        logger.success("Кнопка 'Play with IP' нажата успешно")
                                                         play_with_ip_clicked = True
                                                         failed_attempts = 0  # Сбрасываем счетчик при успехе
-                                                    except Exception as e2:
+                                                    except Exception as e:
+                                                        # Пробуем альтернативные селекторы
+                                                        logger.debug(f"Не удалось найти кнопку по селектору {play_with_ip_selector}, пробуем альтернативные: {e}")
                                                         try:
-                                                            # Пробуем просто по тексту
-                                                            simple_text_selector = 'button:has-text("Play with IP")'
-                                                            await page.wait_for_selector(simple_text_selector, timeout=10000)
-                                                            await page.click(simple_text_selector)
-                                                            logger.success("Кнопка 'Play with IP' нажата успешно (через текстовый селектор)")
+                                                            # Пробуем по data-slot и тексту
+                                                            text_selector = 'button[data-slot="button"]:has-text("Play with IP")'
+                                                            await page.wait_for_selector(text_selector, timeout=10000)
+                                                            await page.click(text_selector)
+                                                            logger.success("Кнопка 'Play with IP' нажата успешно (через альтернативный селектор)")
                                                             play_with_ip_clicked = True
                                                             failed_attempts = 0  # Сбрасываем счетчик при успехе
-                                                        except Exception as e3:
-                                                            logger.error(f"Не удалось найти кнопку 'Play with IP': {e3}")
-                                                            failed_attempts += 1
-                                                            logger.warning(f"Неудачная попытка {failed_attempts}/{max_failed_attempts}")
-                                                            
-                                                            # Если слишком много неудачных попыток подряд, завершаем работу
-                                                            if failed_attempts >= max_failed_attempts:
-                                                                logger.error(f"Превышено максимальное количество неудачных попыток ({max_failed_attempts}). Завершаем работу.")
-                                                                return False
-                                                            
-                                                            # Проверяем "Out of IP Games" и продолжаем цикл
-                                                            await asyncio.sleep(2)
-                                                            out_of_ip_games_selector = 'button[data-slot="button"][aria-label="Out of IP Games"]'
+                                                        except Exception as e2:
                                                             try:
-                                                                out_of_ip_button = page.locator(out_of_ip_games_selector).first
-                                                                if await out_of_ip_button.is_visible(timeout=2000):
-                                                                    logger.warning("Out of IP Games")
-                                                                    return None
-                                                            except Exception:
-                                                                pass
-                                                            
-                                                            # Обновляем страницу перед следующей попыткой
-                                                            logger.info("Обновление страницы перед следующей попыткой...")
-                                                            await page.reload(wait_until="networkidle", timeout=60000)
-                                                            await asyncio.sleep(3)
-                                                            continue
+                                                                # Пробуем просто по тексту
+                                                                simple_text_selector = 'button:has-text("Play with IP")'
+                                                                await page.wait_for_selector(simple_text_selector, timeout=10000)
+                                                                await page.click(simple_text_selector)
+                                                                logger.success("Кнопка 'Play with IP' нажата успешно (через текстовый селектор)")
+                                                                play_with_ip_clicked = True
+                                                                failed_attempts = 0  # Сбрасываем счетчик при успехе
+                                                            except Exception as e3:
+                                                                logger.error(f"Не удалось найти кнопку 'Play with IP': {e3}")
+                                                                failed_attempts += 1
+                                                                logger.warning(f"Неудачная попытка {failed_attempts}/{max_failed_attempts}")
+                                                                
+                                                                # Если слишком много неудачных попыток подряд, завершаем работу
+                                                                if failed_attempts >= max_failed_attempts:
+                                                                    logger.error(f"Превышено максимальное количество неудачных попыток ({max_failed_attempts}). Завершаем работу.")
+                                                                    return False
+                                                                
+                                                                # Проверяем "Out of IP Games" и продолжаем цикл
+                                                                await asyncio.sleep(2)
+                                                                out_of_ip_games_selector = 'button[data-slot="button"][aria-label="Out of IP Games"]'
+                                                                try:
+                                                                    out_of_ip_button = page.locator(out_of_ip_games_selector).first
+                                                                    if await out_of_ip_button.is_visible(timeout=2000):
+                                                                        logger.warning("Out of IP Games")
+                                                                        return None
+                                                                except Exception:
+                                                                    pass
+                                                                
+                                                                # Обновляем страницу перед следующей попыткой
+                                                                logger.info("Обновление страницы перед следующей попыткой...")
+                                                                await page.reload(wait_until="networkidle", timeout=60000)
+                                                                await asyncio.sleep(3)
+                                                                continue
+                                                else:
+                                                    # Если игра уже активна, устанавливаем флаг
+                                                    play_with_ip_clicked = True
                                                 
                                                 # Если "Play with IP" была нажата, проверяем ставку и запускаем игру
                                                 if play_with_ip_clicked:
