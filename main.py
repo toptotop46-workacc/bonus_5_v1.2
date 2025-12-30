@@ -48,6 +48,12 @@ def run_metamap() -> None:
     metamap_run()
 
 
+def run_sonefi() -> None:
+    from modules.sonefi import run as sonefi_run
+
+    sonefi_run()
+
+
 def build_modules() -> Dict[str, Module]:
     return {
         "1": Module(key="1", title="RedButton", run=run_redbutton),
@@ -55,6 +61,7 @@ def build_modules() -> Dict[str, Module]:
         "3": Module(key="3", title="Uniswap", run=run_uniswap),
         "4": Module(key="4", title="Mint Season 4", run=run_mint4season),
         "5": Module(key="5", title="MetaMap NFT", run=run_metamap),
+        "6": Module(key="6", title="SoneFi", run=run_sonefi),
     }
 
 
@@ -93,6 +100,7 @@ def main() -> None:
         "uniswap": "3",
         "mint4season": "4",
         "metamap": "5",
+        "sonefi": "6",
     }
 
     if args.list:
