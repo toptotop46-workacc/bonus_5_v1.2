@@ -741,24 +741,59 @@ def claim_badge(
             timeout=30,
         )
 
+        # Логируем статус код и тело ответа для отладки
+        logger.debug(f"Статус код ответа: {response.status_code}")
+        logger.debug(f"Тело ответа: {response.text[:500]}")
+
         response.raise_for_status()
         data = response.json()
 
-        if data.get("success"):
-            claim_id = data.get("id")
+        # Логируем полный ответ для отладки
+        logger.debug(f"Ответ API: {data}")
+
+        # Проверяем успешность: либо есть success=True, либо есть id (что означает успешную заявку)
+        claim_id = data.get("id")
+        is_success = data.get("success", False) or (claim_id is not None and response.status_code == 200)
+
+        if is_success and claim_id:
             logger.success(f"Заявка на клайм NFT успешно подана (claim_id: {claim_id})")
             return True, claim_id, None
         else:
-            error_msg = data.get("message", "Неизвестная ошибка")
+            # Пытаемся извлечь сообщение об ошибке из разных возможных полей
+            error_msg = (
+                data.get("message") or 
+                data.get("error") or 
+                data.get("msg") or
+                f"Неизвестная ошибка. Ответ: {data}"  # Если ничего не найдено, выводим весь ответ
+            )
+            
+            # Логируем полный ответ при ошибке
+            logger.warning(f"Заявка не подана. Ответ API: {data}")
+            logger.error(f"Ошибка при подаче заявки: {error_msg}")
+            
             return False, None, error_msg
 
+    except requests.exceptions.HTTPError as e:
+        # Обработка HTTP ошибок (4xx, 5xx)
+        error_msg = f"HTTP ошибка {e.response.status_code if e.response else 'unknown'}: {e}"
+        if e.response:
+            try:
+                error_data = e.response.json()
+                error_msg = f"HTTP {e.response.status_code}: {error_data}"
+                logger.debug(f"Тело ошибки: {e.response.text[:500]}")
+            except:
+                error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+        logger.error(f"Ошибка при подаче заявки: {error_msg}")
+        return False, None, error_msg
     except requests.exceptions.RequestException as e:
-        error_msg = f"Ошибка при подаче заявки: {e}"
+        error_msg = f"Ошибка сети при подаче заявки: {e}"
         logger.error(error_msg)
         return False, None, error_msg
     except Exception as e:
         error_msg = f"Неожиданная ошибка при подаче заявки: {e}"
         logger.error(error_msg)
+        import traceback
+        logger.debug(traceback.format_exc())
         return False, None, error_msg
 
 
@@ -770,7 +805,7 @@ def process_wallet(
     wallet_index: int,
     proxies_list: list[ProxyEntry],
     used_proxies_set: set[ProxyEntry],
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """
     Обрабатывает один кошелек: проверяет NFT, регистрируется/логинится, подает заявку.
 
@@ -781,7 +816,8 @@ def process_wallet(
         used_proxies_set: Множество использованных прокси
 
     Returns:
-        (success: bool, wallet_address: str)
+        (success: bool, wallet_address: str, was_skipped: bool)
+        was_skipped: True если кошелек был пропущен (NFT есть или заявка уже подана)
     """
     try:
         # Получаем адрес кошелька
@@ -796,7 +832,7 @@ def process_wallet(
         # 1. Проверка NFT баланса
         if check_nft_balance(wallet_address):
             logger.info(f"[SKIP NFT] {wallet_address} уже имеет NFT Harkan")
-            return True, wallet_address
+            return True, wallet_address, True  # was_skipped = True
 
         # 2. Проверка БД на наличие аккаунта
         account_data = get_harkan_account(wallet_address, QUESTS_DB_PATH)
@@ -810,7 +846,7 @@ def process_wallet(
             # Проверяем, подана ли уже заявка
             if is_harkan_claim_requested(wallet_address, QUESTS_DB_PATH):
                 logger.info(f"[SKIP DB] {wallet_address} заявка уже подана")
-                return True, wallet_address
+                return True, wallet_address, True  # was_skipped = True
 
             # Получаем данные из БД
             username = account_data.get("username")
@@ -832,7 +868,7 @@ def process_wallet(
                 proxy = assign_proxy_to_wallet(wallet_index, proxies_list)
                 if proxy in used_proxies_set:
                     logger.warning(f"Прокси {proxy.safe_label} уже использован, пропускаем кошелек")
-                    return False, wallet_address
+                    return False, wallet_address, False  # was_skipped = False (ошибка, не пропуск)
 
             used_proxies_set.add(proxy)
 
@@ -871,10 +907,10 @@ def process_wallet(
                     update_harkan_claim(wallet_address, claim_id, QUESTS_DB_PATH)
                     mark_wallet_completed(wallet_address, "harkan", 1, 1, QUESTS_DB_PATH)
                     logger.success(f"✅ Заявка успешно подана для {wallet_address}")
-                    return True, wallet_address
+                    return True, wallet_address, False  # was_skipped = False (обработан)
                 else:
                     logger.error(f"Ошибка при подаче заявки: {claim_error}")
-                    return False, wallet_address
+                    return False, wallet_address, False  # was_skipped = False (ошибка)
             else:
                 # Логин не удался, регистрируем заново
                 logger.warning(f"Логин не удался для {username}, регистрируем новый аккаунт")
@@ -891,7 +927,7 @@ def process_wallet(
                 proxy = assign_proxy_to_wallet(wallet_index, proxies_list)
                 if proxy in used_proxies_set:
                     logger.warning(f"Прокси {proxy.safe_label} уже использован, пропускаем кошелек")
-                    return False, wallet_address
+                    return False, wallet_address, False  # was_skipped = False (ошибка, не пропуск)
                 used_proxies_set.add(proxy)
 
         # Генерируем username и password
@@ -920,11 +956,11 @@ def process_wallet(
                 continue
             else:
                 logger.error(f"Ошибка регистрации: {error}")
-                return False, wallet_address
+                return False, wallet_address, False  # was_skipped = False (ошибка)
 
         if not username or not user_id:
             logger.error("Не удалось зарегистрировать аккаунт после всех попыток")
-            return False, wallet_address
+            return False, wallet_address, False  # was_skipped = False (ошибка)
 
         # Выводим данные аккаунта в лог
         logger.info(f"Аккаунт создан - Username: {username}, Password: {password}")
@@ -955,7 +991,7 @@ def process_wallet(
 
         if not success or not access_token:
             logger.error(f"Ошибка при логине после регистрации: {error}")
-            return False, wallet_address
+            return False, wallet_address, False  # was_skipped = False (ошибка)
 
         # Задержка после логина, перед получением данных аккаунта
         random_delay(
@@ -986,16 +1022,16 @@ def process_wallet(
             update_harkan_claim(wallet_address, claim_id, QUESTS_DB_PATH)
             mark_wallet_completed(wallet_address, "harkan", 1, 1, QUESTS_DB_PATH)
             logger.success(f"✅ Заявка успешно подана для {wallet_address}")
-            return True, wallet_address
+            return True, wallet_address, False  # was_skipped = False (обработан)
         else:
             logger.error(f"Ошибка при подаче заявки: {claim_error}")
-            return False, wallet_address
+            return False, wallet_address, False  # was_skipped = False (ошибка)
 
     except Exception as e:
         logger.error(f"Ошибка при обработке кошелька: {e}")
         import traceback
         logger.debug(traceback.format_exc())
-        return False, wallet_address if "wallet_address" in locals() else "unknown"
+        return False, wallet_address if "wallet_address" in locals() else "unknown", False  # was_skipped = False (ошибка)
 
 
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
@@ -1061,17 +1097,20 @@ def run() -> None:
         for i, key_index in enumerate(indices):
             private_key = all_keys[key_index]
 
-            success, wallet_address = process_wallet(
+            success, wallet_address, was_skipped = process_wallet(
                 private_key, key_index, proxies_list, used_proxies_set
             )
 
             if success:
-                wallets_completed += 1
+                if was_skipped:
+                    wallets_skipped += 1
+                else:
+                    wallets_completed += 1
             else:
                 wallets_failed += 1
 
-            # Задержка между кошельками
-            if i < len(indices) - 1:
+            # Задержка между кошельками (только если кошелек был обработан, не пропущен)
+            if i < len(indices) - 1 and not was_skipped:
                 logger.info(f"Ожидание {min_delay_minutes}-{max_delay_minutes} минут перед следующим кошельком...")
                 random_delay_minutes(
                     min_delay_minutes,
